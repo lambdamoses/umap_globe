@@ -10,9 +10,174 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
-library(rnaturalearth)
 library(uwot)
 library(SphericalK)
 library(tidyverse)
+library(sf)
+library(plotly)
+library(gganimate)
+library(spData)
+library(dittoSeq)
+```
+
+# Generate the random points on sphere
+The points should be uniformly distributed on the sphere, so using `runif` on the longitudes and latitudes will not work because in that case, there will be higher density of points around the poles. But I can use the `SphericalK` package to generate random points uniformly distributed on a sphere.
+```{r}
+points <- sphere_random(2000)
+points <- as.data.frame(points)
+head(points)
+```
+```{r}
+ggplot(points, aes(longitudes, latitudes)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  coord_equal()
+```
+
+I can't color 200 countries and keep the colors discernible, so I'll color by continent.
+```{r}
+# Get colorboind friendly palette from dittoSeq
+pal <- dittoColors(1)
+```
+
+```{r}
+ggplot(world) +
+  geom_sf(aes(fill = continent)) +
+  scale_fill_manual(values = pal)
+```
+
+```{r}
+st_crs(world)
+```
+
+```{r}
+points_sf <- points %>% 
+  st_as_sf(coords = c("longitudes", "latitudes")) %>% 
+  st_set_crs("EPSG:4326")
+```
+
+Check that the polygons for countries are valid as that's required in `st_join`.
+```{r}
+all(st_is_valid(world))
+```
+
+So the polygons are all valid. Get the continents
+```{r}
+points_sf <- points_sf %>% 
+  st_join(world[, c("continent", "geom")]) %>% 
+  filter(!is.na(continent)) # Only plot continents, not oceans, as we're land animals
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = world, aes(color = continent)) +
+  geom_sf(data = points_sf, aes(color = continent), size = 0.5) +
+  scale_color_manual(values = pal)
+```
+
+# Get 3D coordinates
+I know, the Earth is not exactly a sphere, and there's such a thing called datum for how the Earth is not exactly a sphere. But for the purpose of this animation, I'll just use a sphere. Say the radius is 6371 km, according to this: https://nssdc.gsfc.nasa.gov/planetary/factsheet/earthfact.html
+```{r}
+points_sf <- cbind(points_sf, st_coordinates(points_sf))
+```
+
+```{r}
+r <- 6371
+points_sf <- points_sf %>% 
+  rename(lat = Y, lon = X) %>% 
+  mutate(lat = lat*pi/180, # Convert to radians
+         lon = lon*pi/180,
+         x = r * cos(lat) * cos(lon),
+         y = r * cos(lat) * sin(lon),
+         z = r * sin(lat))
+```
+
+```{r}
+plot_ly(points_sf, x = ~x, y = ~y, z = ~z, color = ~continent,
+        colors = pal[1:7]) %>% 
+  add_markers(marker=list(size = 4))
+```
+
+Cool, that's what I want.
+
+# UMAP projection
+See how it looks with default parameters
+```{r}
+set.seed(29)
+world_umap <- umap(st_drop_geometry(points_sf[,c("x", "y", "z")]))
+colnames(world_umap) <- c("UMAP1", "UMAP2")
+```
+
+```{r}
+umap_df <- cbind(as.data.frame(world_umap), 
+                 st_drop_geometry(points_sf[,"continent", drop = FALSE]))
+```
+
+```{r}
+ggplot(umap_df, aes(UMAP1, UMAP2, color = continent)) +
+  geom_point(size = 0.5) +
+  scale_color_manual(values = pal) +
+  coord_equal()
+```
+
+The points are really clumped, mostly by continent. Now I'll do what was done here: https://jef.works/blog/2022/01/19/exploring-umap-parameters/
+I made the code from the blog more concise and relevant to the case here.
+```{r}
+## try some different parameters
+umap_params <- expand.grid(
+	spread   = c(0.5, 1, 4),
+	min_dist = c(0.01, 0.15, 0.75)
+)
+	
+umaps <- map_dfr(seq_len(nrow(umap_params)), function(i) {
+	print(i)
+	emb <- uwot::umap(
+		X         = st_drop_geometry(points_sf[,c("x", "y", "z")]),
+		spread    = umap_params$spread[i],
+		min_dist  = umap_params$min_dist[i],
+	)
+	colnames(emb) <- c("UMAP1", "UMAP2")
+	emb <- as.data.frame(emb)
+	emb$continent <- points_sf$continent
+	emb$spread <- umap_params$spread[i]
+	emb$min_dist <- umap_params$min_dist[i]
+	emb
+})
+												  
+ggplot(umaps) +
+	geom_point(aes(x = UMAP1, y = UMAP2, color = continent), size = 1) +
+	theme(
+		axis.text = element_blank(),
+		axis.ticks = element_blank(),
+		axis.title = element_blank()
+	) +
+	facet_wrap(min_dist ~ spread , 
+		labeller = label_both,
+		scales = "free") +
+  theme_minimal()
+```
+
+```{r}
+umaps <- umaps %>% 
+  mutate(param_set = paste0("min_dist: ", min_dist, ", spread: ", spread))
+```
+
+Why shall I not animate the transition through all 9 sets?
+```{r}
+p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
+	geom_point(aes(color = continent))
+				
+anim <- p +
+	transition_states(param_set,
+		transition_length = 3,
+		state_length = 1) +
+		labs(title = '{closest_state}') +
+	theme(plot.title = element_text(size = 28)) +
+		enter_fade()			
+anim + theme_minimal() +
+	view_follow()
+```
+
+```{r}
+anim_save("world_umap.gif", nframes = 200)
 ```
 
