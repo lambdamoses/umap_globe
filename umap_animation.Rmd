@@ -9,6 +9,13 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r, eval=FALSE}
+# Install the packages. Everything is on CRAN, except that bluster is on Bioconductor
+install.packages(c("uwot", "SphericalK", "tidyverse", "sf", "plotly", "gganimate", 
+                   "spData", "igraph", "BiocManager"))
+BiocManager::install("bluster")
+```
+
 ```{r}
 library(uwot)
 library(SphericalK)
@@ -17,13 +24,14 @@ library(sf)
 library(plotly)
 library(gganimate)
 library(spData)
-library(dittoSeq)
+library(igraph)
+library(bluster)
 ```
 
 # Generate the random points on sphere
 The points should be uniformly distributed on the sphere, so using `runif` on the longitudes and latitudes will not work because in that case, there will be higher density of points around the poles. But I can use the `SphericalK` package to generate random points uniformly distributed on a sphere.
 ```{r}
-points <- sphere_random(2000)
+points <- sphere_random(10000)
 points <- as.data.frame(points)
 head(points)
 ```
@@ -35,14 +43,21 @@ ggplot(points, aes(longitudes, latitudes)) +
 
 I can't color 200 countries and keep the colors discernible, so I'll color by continent.
 ```{r}
-# Get colorboind friendly palette from dittoSeq
-pal <- dittoColors(1)
+# Colorboind friendly palette from dittoSeq
+pal <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", 
+         "#CC79A7", "#666666", "#AD7700", "#1C91D4", "#007756", "#D5C711", 
+         "#005685", "#A04700", "#B14380", "#4D4D4D", "#FFBE2D", "#80C7EF", 
+         "#00F6B3", "#F4EB71", "#06A5FF", "#FF8320", "#D99BBD", "#8C8C8C", 
+         "#FFCB57", "#9AD2F2", "#2CFFC6", "#F6EF8E", "#38B7FF", "#FF9B4D", 
+         "#E0AFCA", "#A3A3A3", "#8A5F00", "#1674A9", "#005F45", "#AA9F0D", 
+         "#00446B", "#803800", "#8D3666", "#3D3D3D")
+pal_use <- pal[c(1:7, 9, 8)]
 ```
 
 ```{r}
 ggplot(world) +
   geom_sf(aes(fill = continent)) +
-  scale_fill_manual(values = pal)
+  scale_fill_manual(values = pal_use)
 ```
 
 ```{r}
@@ -64,14 +79,19 @@ So the polygons are all valid. Get the continents
 ```{r}
 points_sf <- points_sf %>% 
   st_join(world[, c("continent", "geom")]) %>% 
-  filter(!is.na(continent)) # Only plot continents, not oceans, as we're land animals
+  mutate(continent = case_when(is.na(continent) ~ "oceans",
+                               TRUE ~ continent),
+         continent = fct_relevel(continent, "oceans", after = Inf))
+world <- world %>% 
+  mutate(continent = fct_expand(continent, "oceans"),
+         continent = fct_relevel(continent, "oceans", after = Inf))
 ```
 
 ```{r}
 ggplot() +
   geom_sf(data = world, aes(color = continent)) +
   geom_sf(data = points_sf, aes(color = continent), size = 0.5) +
-  scale_color_manual(values = pal)
+  scale_color_manual(values = pal_use, drop = FALSE)
 ```
 
 # Get 3D coordinates
@@ -93,8 +113,8 @@ points_sf <- points_sf %>%
 
 ```{r}
 plot_ly(points_sf, x = ~x, y = ~y, z = ~z, color = ~continent,
-        colors = pal[1:7]) %>% 
-  add_markers(marker=list(size = 4))
+        colors = pal_use) %>% 
+  add_markers(marker=list(size = 3))
 ```
 
 Cool, that's what I want.
@@ -115,8 +135,9 @@ umap_df <- cbind(as.data.frame(world_umap),
 ```{r}
 ggplot(umap_df, aes(UMAP1, UMAP2, color = continent)) +
   geom_point(size = 0.5) +
-  scale_color_manual(values = pal) +
-  coord_equal()
+  scale_color_manual(values = pal_use) +
+  coord_equal() +
+  guides(color = guide_legend(override.aes = list(size = 2)))
 ```
 
 The points are really clumped, mostly by continent. Now I'll do what was done here: https://jef.works/blog/2022/01/19/exploring-umap-parameters/
@@ -144,18 +165,21 @@ umaps <- map_dfr(seq_len(nrow(umap_params)), function(i) {
 })
 												  
 ggplot(umaps) +
-	geom_point(aes(x = UMAP1, y = UMAP2, color = continent), size = 1) +
+	geom_point(aes(x = UMAP1, y = UMAP2, color = continent), size = 0.5) +
 	theme(
 		axis.text = element_blank(),
 		axis.ticks = element_blank(),
 		axis.title = element_blank()
 	) +
+  scale_color_manual(values = pal_use) +
 	facet_wrap(min_dist ~ spread , 
 		labeller = label_both,
 		scales = "free") +
+  guides(color = guide_legend(override.aes = list(size = 2))) +
   theme_minimal()
 ```
 
+Interesting. With larger min_dist, and with the oceans, the projection kind of looks like the map.
 ```{r}
 umaps <- umaps %>% 
   mutate(param_set = paste0("min_dist: ", min_dist, ", spread: ", spread))
@@ -164,8 +188,10 @@ umaps <- umaps %>%
 Why shall I not animate the transition through all 9 sets?
 ```{r}
 p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
-	geom_point(aes(color = continent))
-				
+	geom_point(aes(color = continent), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = pal_use) +
+  guides(color = guide_legend(override.aes = list(size = 2))) +
+  coord_equal()
 anim <- p +
 	transition_states(param_set,
 		transition_length = 3,
@@ -178,6 +204,73 @@ anim + theme_minimal() +
 ```
 
 ```{r}
-anim_save("world_umap.gif", nframes = 200)
+anim_save("world_umap.gif")
+```
+
+How about the animation but without coloring by continent? Then it's just UMAP projections of points uniformly distributed on a sphere.
+
+```{r}
+p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
+	geom_point(size = 0.5, alpha = 0.5) +
+  coord_equal()
+anim <- p +
+	transition_states(param_set,
+		transition_length = 3,
+		state_length = 1) +
+		labs(title = '{closest_state}') +
+	theme(plot.title = element_text(size = 28)) +
+		enter_fade()			
+anim + theme_minimal() +
+	view_follow()
+```
+
+```{r}
+anim_save("sphere_umap.gif")
+```
+
+How about color by Leiden clustering? I really don't expect meaningful clusters since the points are uniformly distributed on the sphere.
+```{r}
+g <- makeKNNGraph(st_drop_geometry(points_sf[,c("x", "y", "z")]), k = 20)
+points_sf$leiden <- cluster_leiden(g, objective_function = "modularity",
+                                   resolution_parameter = 0.2)$membership
+umaps$leiden <- rep(points_sf$leiden, 9)
+umaps$leiden <- factor(umaps$leiden, 
+                       levels = as.character(1:length(unique(points_sf$leiden))))
+```
+
+```{r}
+p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
+	geom_point(aes(color = leiden), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = pal) +
+  guides(color = guide_legend(override.aes = list(size = 2))) +
+  coord_equal()
+anim <- p +
+	transition_states(param_set,
+		transition_length = 3,
+		state_length = 1) +
+		labs(title = '{closest_state}') +
+	theme(plot.title = element_text(size = 28)) +
+		enter_fade()			
+anim + theme_minimal() +
+	view_follow()
+```
+
+```{r}
+anim_save("leiden_umap.gif")
+```
+
+Where are the leiden clusters on the map?
+```{r}
+ggplot() +
+  geom_sf(data = points_sf, aes(color = factor(leiden)), size = 0.5, alpha = 0.5) +
+  geom_sf(data = world, fill = NA) +
+  scale_color_manual(values = pal_use) +
+  guides(color = guide_legend(override.aes = list(size = 2)))
+```
+
+```{r}
+# Version without ocean, to better show Leiden clustering
+points_sf_land <- points_sf %>% 
+  filter(continent != "oceans") 
 ```
 
