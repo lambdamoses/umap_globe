@@ -143,64 +143,83 @@ ggplot(umap_df, aes(UMAP1, UMAP2, color = continent)) +
 The points are really clumped, mostly by continent. Now I'll do what was done here: https://jef.works/blog/2022/01/19/exploring-umap-parameters/
 I made the code from the blog more concise and relevant to the case here.
 ```{r}
+run_umap_param_grid <- function(X, umap_params) {
+  map_dfr(seq_len(nrow(umap_params)), function(i) {
+    print(i)
+    emb <- uwot::umap(
+      X         = X,
+      spread    = umap_params$spread[i],
+      min_dist  = umap_params$min_dist[i],
+    )
+    colnames(emb) <- c("UMAP1", "UMAP2")
+    emb <- as.data.frame(emb)
+    emb$spread <- umap_params$spread[i]
+    emb$min_dist <- umap_params$min_dist[i]
+    emb$param_set <- paste0("min_dist: ", umap_params$min_dist[i], 
+                            ", spread: ", umap_params$spread[i])
+    emb
+  })
+}
+```
+
+```{r}
+plot_umap_param_grid <- function(umaps, color_name) {
+  ggplot(umaps) +
+    geom_point(aes_string(x = "UMAP1", y = "UMAP2", color = color_name), 
+               size = 0.5) +
+    theme(
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank()
+    ) +
+    scale_color_manual(values = pal_use) +
+    facet_wrap(min_dist ~ spread , 
+               labeller = label_both,
+               scales = "free") +
+    guides(color = guide_legend(override.aes = list(size = 2))) +
+    theme_minimal()
+}
+```
+
+```{r}
 ## try some different parameters
 umap_params <- expand.grid(
 	spread   = c(0.5, 1, 4),
 	min_dist = c(0.01, 0.15, 0.75)
 )
-	
-umaps <- map_dfr(seq_len(nrow(umap_params)), function(i) {
-	print(i)
-	emb <- uwot::umap(
-		X         = st_drop_geometry(points_sf[,c("x", "y", "z")]),
-		spread    = umap_params$spread[i],
-		min_dist  = umap_params$min_dist[i],
-	)
-	colnames(emb) <- c("UMAP1", "UMAP2")
-	emb <- as.data.frame(emb)
-	emb$continent <- points_sf$continent
-	emb$spread <- umap_params$spread[i]
-	emb$min_dist <- umap_params$min_dist[i]
-	emb
-})
-												  
-ggplot(umaps) +
-	geom_point(aes(x = UMAP1, y = UMAP2, color = continent), size = 0.5) +
-	theme(
-		axis.text = element_blank(),
-		axis.ticks = element_blank(),
-		axis.title = element_blank()
-	) +
-  scale_color_manual(values = pal_use) +
-	facet_wrap(min_dist ~ spread , 
-		labeller = label_both,
-		scales = "free") +
-  guides(color = guide_legend(override.aes = list(size = 2))) +
-  theme_minimal()
+umaps <- run_umap_param_grid(st_drop_geometry(points_sf[,c("x", "y", "z")]),
+                             umap_params)
+umaps$continent <- rep(points_sf$continent, 9)
+plot_umap_param_grid(umaps, "continent")
 ```
 
 Interesting. With larger min_dist, and with the oceans, the projection kind of looks like the map.
-```{r}
-umaps <- umaps %>% 
-  mutate(param_set = paste0("min_dist: ", min_dist, ", spread: ", spread))
-```
 
 Why shall I not animate the transition through all 9 sets?
 ```{r}
-p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
-	geom_point(aes(color = continent), size = 0.5, alpha = 0.8) +
-  scale_color_manual(values = pal_use) +
-  guides(color = guide_legend(override.aes = list(size = 2))) +
-  coord_equal()
-anim <- p +
-	transition_states(param_set,
-		transition_length = 3,
-		state_length = 1) +
-		labs(title = '{closest_state}') +
-	theme(plot.title = element_text(size = 28)) +
-		enter_fade()			
-anim + theme_minimal() +
-	view_follow()
+anim_umap_param_grid <- function(umaps, color_name = NULL) {
+  p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
+    coord_equal()
+  if (!is.null(color_name)) {
+    p <- p +
+      geom_point(aes_string(color = color_name), size = 0.5, alpha = 0.8) +
+      scale_color_manual(values = pal_use) +
+      guides(color = guide_legend(override.aes = list(size = 2)))
+  }
+  anim <- p +
+    transition_states(param_set,
+                      transition_length = 3,
+                      state_length = 1) +
+    labs(title = '{closest_state}') +
+    theme(plot.title = element_text(size = 28)) +
+    enter_fade()			
+  anim + theme_minimal() +
+    view_follow()
+}
+```
+
+```{r}
+anim_umap_param_grid(umaps, "continent")
 ```
 
 ```{r}
@@ -210,18 +229,7 @@ anim_save("world_umap.gif")
 How about the animation but without coloring by continent? Then it's just UMAP projections of points uniformly distributed on a sphere.
 
 ```{r}
-p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
-	geom_point(size = 0.5, alpha = 0.5) +
-  coord_equal()
-anim <- p +
-	transition_states(param_set,
-		transition_length = 3,
-		state_length = 1) +
-		labs(title = '{closest_state}') +
-	theme(plot.title = element_text(size = 28)) +
-		enter_fade()			
-anim + theme_minimal() +
-	view_follow()
+anim_umap_param_grid(umaps, NULL)
 ```
 
 ```{r}
@@ -239,20 +247,7 @@ umaps$leiden <- factor(umaps$leiden,
 ```
 
 ```{r}
-p <- ggplot(umaps, aes(UMAP1, UMAP2)) +
-	geom_point(aes(color = leiden), size = 0.5, alpha = 0.8) +
-  scale_color_manual(values = pal) +
-  guides(color = guide_legend(override.aes = list(size = 2))) +
-  coord_equal()
-anim <- p +
-	transition_states(param_set,
-		transition_length = 3,
-		state_length = 1) +
-		labs(title = '{closest_state}') +
-	theme(plot.title = element_text(size = 28)) +
-		enter_fade()			
-anim + theme_minimal() +
-	view_follow()
+anim_umap_param_grid(umaps, "leiden")
 ```
 
 ```{r}
@@ -268,9 +263,62 @@ ggplot() +
   guides(color = guide_legend(override.aes = list(size = 2)))
 ```
 
+# Without the ocean
 ```{r}
 # Version without ocean, to better show Leiden clustering
 points_sf_land <- points_sf %>% 
   filter(continent != "oceans") 
 ```
 
+```{r}
+umaps_land <- run_umap_param_grid(st_drop_geometry(points_sf_land[,c("x","y","z")]),
+                                  umap_params)
+```
+
+```{r}
+umaps_land$continent <- rep(points_sf_land$continent, 9)
+```
+
+```{r}
+plot_umap_param_grid(umaps_land, "continent")
+```
+
+```{r}
+anim_umap_param_grid(umaps_land, "continent")
+```
+
+```{r}
+anim_save("world_umap_land.gif")
+```
+
+How about leiden clustering?
+```{r}
+g <- makeKNNGraph(st_drop_geometry(points_sf_land[,c("x", "y", "z")]), k = 20)
+points_sf_land$leiden <- cluster_leiden(g, objective_function = "modularity",
+                                        resolution_parameter = 0.2)$membership
+points_sf_land$leiden <- factor(points_sf_land$leiden, 
+                                levels = as.character(1:length(unique(points_sf$leiden))))
+umaps_land$leiden <- rep(points_sf_land$leiden, 9)
+```
+
+```{r}
+plot_umap_param_grid(umaps_land, "leiden")
+```
+
+How do the leiden clusters correspond to the continents? Without the ocean, I do expect meaningful clusters.
+```{r}
+ggplot() +
+  geom_sf(data = points_sf_land, aes(color = leiden), size = 0.5) +
+  geom_sf(data = world, fill = NA) +
+  scale_color_manual(values = pal_use) +
+  guides(color = guide_legend(override.aes = list(size = 2)))
+```
+
+That's just one set of Leiden clustering parameters.
+```{r}
+anim_umap_param_grid(umaps_land, "leiden")
+```
+
+```{r}
+anim_save("leiden_umap_land.gif")
+```
